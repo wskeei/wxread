@@ -53,6 +53,23 @@
 
 **重要：除了READ_NUM配置在varables，其它的都配置在secrets里面的；需要推送`PUSH_METHOD`是必填的。**
 
+### 每日漏跑检测与补跑
+
+`wxread` 工作流按北京时间每天 **01:07** 开始尝试，之后全天每 **15 分钟**检查一次。当天完成后，检查只读取状态并跳过阅读；漏触发或失败时，下一次检查会继续补跑。01:07 前的自动检查不会启动阅读，手动运行不受这个时间限制。
+
+- 新触发不会取消正在进行的阅读，所有正式任务串行执行。
+- 按 `Asia/Shanghai` 日期累计成功次数，达到 `READ_NUM` 即视为当天完成。当前默认目标是 40 次，上限为 360 次（180 分钟）；仓库已有的 `READ_NUM` 会继续生效。
+- 每次执行内最多尝试 3 次，间隔 60 秒；失败后接着已完成的次数继续。连续鉴权失败会退出，避免无限刷新 Cookie。
+- 每 5 分钟和每次子进程退出时，将进度写入 **`wxread-state` 分支的 `days/YYYY-MM-DD.json`**，只保存日期、次数和运行编号，不保存 Cookie 或其他凭据。Runner 被强制终止时，最后约 5 分钟尚未保存的进度可能重复。
+- 午夜前停止旧日期任务，不能为过去日期补签到。升级时会识别当天已经成功的旧版任务，避免再次完整阅读。
+- 手动运行时勾选 `check_only` 可以验证状态检查，不执行阅读，也不修改进度。
+
+**GitHub Actions 不保证准点触发，也不保证每天一定触发。** 每 15 分钟检查提供多次恢复机会，不是最长延迟承诺。GitHub 调度整体故障、服务不可用或 Cookie 失效时，仍可能无法完成。[GitHub 官方调度说明](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows#scheduled-workflows-running-at-unexpected-times)
+
+当前增强只依赖 GitHub，无需其他服务器。如果以后要求按分钟准点执行，可以迁移到持续在线服务器上的本地定时器和 Docker 部署。
+
+本地验证：`python3 -m unittest discover -s tests -v`。
+
 ### 视频教程
 
 [![视频教程](https://github.com/user-attachments/assets/ec144869-3dbb-40fe-9bc5-f8bf1b5fce3c)](https://www.bilibili.com/video/BV1kJ6gY3En3/ "点击查看视频")

@@ -6,6 +6,10 @@ import logging
 import hashlib
 import requests
 import urllib.parse
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from push import push
 from log_utils import setup_logging
 from config import data, headers, cookies, READ_NUM, PUSH_METHOD, book, chapter
@@ -97,12 +101,16 @@ def refresh_cookie(strict=True):
 
 # renewal 失败不等于当前阅读会话已失效；启动时刷新失败也继续尝试阅读。
 refresh_cookie(strict=False)
-index = 1
+index = int(os.getenv('READ_START_INDEX', '0')) + 1
+auth_repair_attempts = 0
 lastTime = int(time.time()) - 30
 synckey_repair_attempts = 0
 logging.info(f"一共需要阅读 {READ_NUM} 次。")
 
 while index <= READ_NUM:
+    target_date = os.getenv('WXREAD_TARGET_DATE')
+    if target_date and (datetime.now(ZoneInfo('Asia/Shanghai')) + timedelta(seconds=45)).date().isoformat() != target_date:
+        raise RuntimeError('北京时间即将跨日，停止旧日期的阅读任务。')
     data.pop('s')
     data['b'] = random.choice(book)
     data['c'] = random.choice(chapter)
@@ -124,6 +132,7 @@ while index <= READ_NUM:
             data=json.dumps(data, separators=(',', ':')),
             timeout=REQUEST_TIMEOUT,
         )
+        response.raise_for_status()
     except requests.RequestException as exc:
         ERROR_CODE = f"阅读请求失败：{exc}"
         logging.error(ERROR_CODE)
@@ -140,11 +149,18 @@ while index <= READ_NUM:
 
     logging.debug("response: %s", resData)
 
-    if 'succ' in resData:
+    if isinstance(resData, dict) and resData.get('succ') == 1:
         if 'synckey' in resData:
             synckey_repair_attempts = 0
+            auth_repair_attempts = 0
             lastTime = thisTime
             index += 1
+            progress_file = os.getenv('READ_PROGRESS_FILE')
+            if progress_file:
+                path = Path(progress_file)
+                temporary = path.with_suffix('.tmp')
+                temporary.write_text(json.dumps({'completed': index - 1}))
+                temporary.replace(path)
             time.sleep(30)
             refresh_print(f"阅读进度: 第 {min(index, READ_NUM + 1) - 1}/{READ_NUM} 次，已完成 {(index - 1) * 0.5:.1f} 分钟")
         else:
@@ -169,6 +185,11 @@ while index <= READ_NUM:
                 raise RuntimeError(ERROR_CODE) from exc
             time.sleep(SYNCKEY_REPAIR_DELAY)
     else:
+        if not isinstance(resData, dict):
+            raise RuntimeError('read 接口返回的 JSON 不是对象。')
+        auth_repair_attempts += 1
+        if auth_repair_attempts >= 3:
+            raise RuntimeError('连续 3 次阅读失败，交给每日补跑机制重试。')
         err_code = resData.get('errCode')
         err_msg = resData.get('errMsg')
         logging.warning(
